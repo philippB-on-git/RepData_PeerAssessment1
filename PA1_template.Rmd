@@ -4,22 +4,140 @@ output:
   html_document:
     keep_md: true
 ---
+```{r setup, include=FALSE}
 
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set( fig.path = "figure/fig-")
+
+Sys.setlocale(category = "LC_ALL", locale = "english")
+
+```
+
+Following packages are used for the analysis:
+```{r, results="hide", message=FALSE}
+library(dplyr)
+library(ggplot2)
+```
 
 ## Loading and preprocessing the data
 
+If necessary unzip raw data and read in activity.csv. The tibble class is used.
+
+```{r}
+if (!file.exists("activity.csv")) unzip("activity.zip")
+act <- as_tibble(read.csv("activity.csv"))
+str(act)
+```
+
+Formatting date-column:
+```{r}
+act$date <- as.Date(act$date)
+head(act)
+```
 
 
 ## What is mean total number of steps taken per day?
 
+Using date as group for summarizing the total number of steps per day.
+```{r}
+act.sum <- act %>% group_by(date) %>% summarize(total.steps = sum(steps))
+head(act.sum)
+```
 
+The total number of steps per day are distributed as follows. Days with missing values are excluded from the plot.
+```{r, fig.align='center'}
+qplot(act.sum$total.steps[!is.na(act.sum$total.steps)], bins = 30, xlab = "total steps per day")
+
+total.steps <- c(mean(act.sum$total.steps, na.rm = T), median(act.sum$total.steps, na.rm = T))
+
+summary(act.sum$total.steps)
+```
+The mean total steps per day were found to be `r format(total.steps[1])` while the median is `r format(total.steps[2])`.
 
 ## What is the average daily activity pattern?
 
+To analyze the average activity pattern in the course of the day, the step count is averaged per interval for all days whereby missing values are excluded.
+```{r, fig.align='center'}
+act.daily.trend <- act %>% group_by(interval) %>% summarize(mean.steps = mean(steps, na.rm = T))
+summary(act.daily.trend$interval)
 
+qplot(x = act.daily.trend$interval, y = act.daily.trend$mean.steps, geom = "line", 
+      xlab = "5-minute interval", ylab = "average steps")
+```
+
+Finding the 5-minute interval which contains the maxmimum steps on average:
+```{r}
+maxsteps <- act.daily.trend[which.max(act.daily.trend$mean.steps), c("interval", "mean.steps")]
+maxsteps
+```
+The 5-minute interval `r maxsteps[[1]]` contains with `r round(maxsteps[[2]],1)` on average the maximum number of steps during the course of the day.
 
 ## Imputing missing values
 
+### Investigating missing values
+```{r, fig.align="center", fig.width=3, fig.height=3}
+total.na <- sum(is.na(act$steps))
+ratio.na <- mean(is.na(act$steps))
+cbind(total.na, ratio.na)
+
+daily.na <- act %>% group_by(date) %>% summarize(ratio.na = mean(is.na(steps)))
+daily.na
+table(daily.na$ratio.na)
+
+ggplot(as.data.frame(table(daily.na$ratio.na)), aes(x=Var1, y = Freq)) + 
+    geom_bar(stat="identity") + labs(x =  "fraction of missing values of day")
+```
+
+There are in total `r total.na` missing values in the data set which is equal to `r round(ratio.na * 100, 1)` % of all cases. The barplot indicates that missing values occur always for the complete day. Hence, if for a given day there are missing values, this means that all values of that day are missing. The occurance of missing values is not completely random. To impute the missing values of a day with only missing values (as stated before, this is the only case of missing values in this dataset), the average step number for each 5-minute interval is used calculated for the corresponding weekday. For example if data for a monday is missing, only data from mondays is used. This is reasonable to avoid introducing a bias regarding activity patterns during the whole week.
+
+Identifying days with only missing values (meaning a ratio of 1):
+```{r}
+days.na <- daily.na[daily.na$ratio.na == 1, 1][[1]]
+```
+
+### Imputing values using described method
+```{r, fig.align="center"}
+act.imputed <- act %>% mutate(weekday = weekdays(act$date))
+weekday.mean.steps <- act.imputed %>% filter(!(date %in% days.na)) %>% 
+    group_by(weekday, interval) %>% summarize(mean.step.number = mean(steps))
+weekday.mean.steps
+
+act.imputed <- act.imputed %>% inner_join(weekday.mean.steps, by=c("weekday", "interval")) %>% 
+    mutate(steps = ifelse(is.na(steps), mean.step.number, steps)) %>% select(steps, date, interval, weekday)
+
+summary(act.imputed$steps)
+
+act.sum.imp <- act.imputed %>% group_by(date) %>% summarize(total.steps = sum(steps))
+total.steps.imp <- c(mean(act.sum.imp$total.steps), median(act.sum.imp$total.steps))
+summary(act.sum.imp$total.steps)
+
+qplot(act.sum.imp$total.steps, bins = 30, xlab = "total steps per day")
+```
+
+The mean total steps per day were found to be `r format(total.steps.imp[1])` while the median is `r format(total.steps.imp[2])`. For comparison, the original values with missing values were `r format(total.steps[1])` for the mean and `r format(total.steps[2])` for the median, respectively. The discrepancy is caused by the chosen method for imputing values as the mean values for each weekday were used rather than the total mean values. 
+
+Investigating the impact of imputing missing data on the estimates of the total daily number of steps:
+```{r, fig.align='center'}
+act.sum.imp <- act.sum.imp %>% mutate(group = "imputed")
+act.sum     <- act.sum %>% mutate(group = "original") %>% filter(!is.na(total.steps))
+comp.sum    <- rbind(act.sum, act.sum.imp)
+
+ggplot(data = comp.sum, mapping = aes(x = total.steps, fill = group)) + geom_histogram(position = "dodge") + labs(x = "daily number of steps")
+```
 
 
 ## Are there differences in activity patterns between weekdays and weekends?
+
+Using the dataset with imputed values:
+```{r, fig.align='center'}
+act.pattern.imputed <- act.imputed %>%
+  mutate(weekpart = as.factor(ifelse(weekday %in% c("Saturday", "Sunday"), "weekend", "weekday"))) %>%
+  group_by(weekpart, interval) %>%
+  summarize(mean.steps = mean(steps))
+
+ggplot(act.pattern.imputed, mapping = aes(x = interval, y = mean.steps)) +
+  geom_line() + 
+  facet_grid(rows = 2, facets = act.pattern.imputed$weekpart) + 
+  labs(x = "interval", y = "number of steps")
+```
